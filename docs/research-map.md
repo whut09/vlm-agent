@@ -1,101 +1,138 @@
-# VLA Research Map
+# Native Grounding VLM Research Map
 
-本文件是初始研究索引，不代替逐篇复现与许可证审计。加入 production research snapshot 前，应保存论文版本、代码 revision、checkpoint、许可证、数据许可和 claim evidence。
+本文件用于建立初始模型、数据集、评测和训练组件地图。正式实验前应冻结模型 revision、代码 revision、许可证、数据许可和评测配置。
 
-## 1. VLA 基础路线
+## 1. 首批模型候选
 
-| 工作 | 建议关注 | 项目用途 |
+| 模型 | 关注能力 | 项目角色 |
 |---|---|---|
-| [RT-1](https://arxiv.org/abs/2212.06817) | 大规模真实机器人数据、tokenized action | action representation 基线 |
-| [RT-2](https://arxiv.org/abs/2307.15818) | web-scale VLM 知识到动作迁移 | VLM-to-VLA 设计谱系 |
-| [PaLM-E](https://arxiv.org/abs/2303.03378) | embodied multimodal language model | 高层语义与具身输入 |
-| [Open X-Embodiment / RT-X](https://robotics-transformer-x.github.io/) | 跨机构、跨本体数据统一 | dataset/embodiment contract |
-| [Octo](https://octo-models.github.io/) | 开源 generalist robot policy | 多任务、多本体 adapter 参考 |
-| [OpenVLA](https://openvla.github.io/) | 开源 VLA、离散动作 token | 主流开源 baseline |
-| [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | action chunk、continuous action、优化微调 | 第一主研究 adapter |
-| [π0](https://www.physicalintelligence.company/blog/pi0) / [openpi](https://github.com/Physical-Intelligence/openpi) | flow matching、通用 robot policy | 连续动作与大模型扩展 |
-| [π0.5](https://www.physicalintelligence.company/blog/pi05) | open-world generalization | 跨环境泛化研究 |
-| [SmolVLA](https://huggingface.co/blog/smolvla) | 小型开源 VLA 与 LeRobot 工具链 | 默认 MVP 模型 |
-| [GR00T N1](https://arxiv.org/abs/2503.14734) / [Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T) | humanoid、dual-system、合成数据 | humanoid/Isaac 扩展 |
-| [Gemini Robotics](https://deepmind.google/discover/blog/gemini-robotics-brings-ai-into-the-physical-world/) | embodied reasoning 与动作模型 | 闭源能力参考 |
-| [Helix](https://www.figure.ai/news/helix) | humanoid visuomotor policy | 长时、双臂和部署参考 |
+| [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL) | 开放词汇 2D grounding、pointing、OCR、视觉推理、多尺寸权重 | 默认 baseline 候选 |
+| [GLM-V](https://github.com/zai-org/GLM-V) | 复杂描述 grounding、规范化坐标、视觉推理和后训练工具 | 精确定位对照 |
+| [Molmo2](https://github.com/allenai/molmo2) | pointing、图像/视频 grounding、开放训练生态 | 点定位和视频扩展 |
+| [InternVL](https://github.com/OpenGVLab/InternVL) | 多尺寸视觉语言模型和微调生态 | 通用能力与成本对照，grounding 需实测 |
 
-## 2. 数据集与基准
+模型进入 capability matrix 前记录：
 
-| 数据/基准 | 重点 | Harness 需求 |
-|---|---|---|
-| [LeRobot](https://github.com/huggingface/lerobot) | dataset/model/robot 工具链 | 默认 dataset contract |
-| [LIBERO](https://libero-project.github.io/) | lifelong manipulation、任务套件 | baseline 与遗忘评测 |
-| [Open X-Embodiment](https://robotics-transformer-x.github.io/) | RLDS、多本体、多任务 | embodiment mapping、数据过滤 |
-| [DROID](https://droid-dataset.github.io/) | 大规模真实世界操作数据 | 场景与操作者 group split |
-| [BridgeData V2](https://rail-berkeley.github.io/bridgedata/) | 多任务真实机器人轨迹 | 跨任务迁移 |
-| [RoboMimic](https://robomimic.github.io/) | imitation learning 数据和基准 | offline replay 与算法测试 |
-| [RoboTwin](https://robotwin-platform.github.io/) | 双臂仿真、合成数据与评测 | RL rollout 和跨任务评估 |
+- 原生 box/point 输出协议。
+- 是否支持多目标、无目标、复杂指代和中文查询。
+- 本地权重、许可证、量化、Transformers/vLLM/SGLang 支持。
+- LoRA/全参训练方案和显存需求。
+- 已知 parser、resize、tokenizer 或 chat-template 限制。
 
-优先研究动作/坐标统一、时间同步、相机缺帧、语言质量、成功标签、相邻帧泄漏、同场景跨 split 泄漏和数据许可证。
+## 2. Grounding 与开放词汇基础工作
 
-## 3. 强化学习与后训练
+这些工作用于理解任务和评测，不表示项目需要把相应检测器接入主路径：
 
-| 工作 | 核心启发 | 建议实验 |
-|---|---|---|
-| [ConRFT](https://arxiv.org/abs/2502.05450) | offline + online reinforced fine-tuning、一致性策略 | 小数据接触任务、人工干预日志 |
-| [SimpleVLA-RL](https://arxiv.org/abs/2509.09674) | outcome reward、并行 rollout、VLA RL scaling | OpenVLA-OFT + LIBERO/RoboTwin executor |
-| [Diffusion Policy](https://diffusion-policy.cs.columbia.edu/) | 视觉运动策略与 action sequence | 连续动作 decoder 对照 |
-| [ACT](https://tonyzhaozh.github.io/aloha/) | action chunking、低成本双臂数据 | chunk length 与 temporal aggregation |
+| 工作 | 研究重点 |
+|---|---|
+| [GLIP](https://arxiv.org/abs/2112.03857) | detection 与 phrase grounding 的统一预训练 |
+| [Grounding DINO](https://github.com/IDEA-Research/GroundingDINO) | 开放集合目标检测与语言 grounding |
+| [OWL-ViT](https://arxiv.org/abs/2205.06230) / [OWLv2](https://arxiv.org/abs/2306.09683) | image-text pretraining 到开放词汇检测 |
+| [YOLO-World](https://github.com/AILab-CVC/YOLO-World) | 实时开放词汇检测，用作效率指标参考 |
+| [Florence-2](https://huggingface.co/microsoft/Florence-2-large) | 统一 prompt-based vision tasks 和定位表示 |
 
-RL 组件契约至少包含：是否需要 log-prob、value/Q、reward 类型、on/off-policy、rollout 环境、action decoder 兼容性、显存、并行策略和安全条件。
+## 3. 数据集
 
-## 4. 视觉 RAG、检索与记忆
+### 检测与长尾
 
-| 工作 | 核心启发 | 项目映射 |
-|---|---|---|
-| [Embodied-RAG](https://arxiv.org/abs/2409.18313) | 分层非参数 embodied memory | semantic/episodic memory 层级 |
-| [EmbodiedRAG](https://arxiv.org/abs/2410.23968) | 动态 3D scene graph retrieval | 场景过滤与 planning context |
-| [RAG-Modulo](https://arxiv.org/abs/2405.16506) | 检索、生成与 verifier 闭环 | retrieval verifier 思路 |
-| [RoboRAG](https://arxiv.org/abs/2511.21652) | demonstration retrieval 用于机器人策略 | trajectory retrieval 入口 |
+- [COCO](https://cocodataset.org/)
+- [LVIS](https://www.lvisdataset.org/)
+- [Objects365](https://www.objects365.org/)
+- [Open Images](https://storage.googleapis.com/openimages/web/index.html)
+- [ODinW](https://github.com/microsoft/GLIP#odinw--object-detection-in-the-wild)
 
-第一阶段聚焦可验证的 episodic retrieval：
+### Referring Expression 与 Phrase Grounding
 
-- query：当前关键帧、指令、proprio、robot/task metadata。
-- corpus：训练 split 的成功、失败和人工干预片段。
-- result：带来源、时间区间、outcome 和 action summary 的 typed context。
-- audit：禁止检索 validation/test episode 或 near duplicate。
-- evaluation：除 Recall@K 外，比较 task success、negative transfer、latency 和 safety。
+- RefCOCO、RefCOCO+、RefCOCOg。
+- [Flickr30k Entities](https://bryanplummer.com/Flickr30kEntities/)。
+- [Visual Genome](https://visualgenome.org/)。
 
-## 5. Research Snapshot Schema
+### OCR 与文档定位
+
+- [TextOCR](https://textvqa.org/textocr/)。
+- [DocLayNet](https://github.com/DS4SD/DocLayNet)。
+- 自有票据、包装、界面和工业文档数据。
+
+### 自有 YOLO 数据转换
+
+保留图像和 boxes，新增 query、语言、同义词、属性、关系、负样本和 ontology。转换后的 dataset version 必须能追踪回原 YOLO 数据版本。
+
+## 4. Benchmark Matrix
+
+| 能力 | 主要指标 |
+|---|---|
+| closed/open vocabulary localization | AP、Recall、base/novel AP |
+| referring expression | Acc@0.5/0.75、mean IoU |
+| pointing | point-in-box、normalized distance |
+| counting | exact match、MAE、实例定位覆盖 |
+| negative query | empty precision/recall、hallucination rate |
+| format | JSON valid、box parse、coordinate valid |
+| reliability | duplicate、miss、FP、calibration |
+| efficiency | latency、tokens、VRAM、throughput、cost |
+
+评测必须按 small/medium/large、稀有类别、密集目标、遮挡、分辨率、语言和 query 复杂度分层。
+
+## 5. Visual Retrieval
+
+研究目标不是用检索模型替代定位，而是回答：视觉示例能否提升原生 VLM 对长尾类别、领域术语、复杂关系和 hard negative 的定位？
+
+需要的组件：
+
+- image/region encoder 与版本化索引。
+- query-image、query-text 和 metadata 联合检索。
+- positive、hard negative、same-scene 和 cross-domain 策略。
+- retrieval trace、split leakage、near-duplicate audit。
+- few-shot image/token budget 和消融。
+
+## 6. 训练研究
+
+### SFT
+
+- 多任务混合：grounding、pointing、counting、OCR grounding、relations。
+- 多坐标格式应统一为一个训练协议，避免模型学到互相冲突的表达。
+- 加入 no-object、易混类别、复杂否定和重复框清理数据。
+
+### Preference Optimization
+
+- 正确框优于偏移框。
+- 完整多目标优于只返回显著目标。
+- 正确空结果优于幻觉目标。
+- 有效简洁 JSON 优于不可解析长解释。
+
+### Reward-based Post-training
+
+可研究 GLM-V 一类基于可验证视觉 reward 的后训练思路。Reward 必须由可重复计算的 schema、IoU、coverage、FP/FN、重复、幻觉和成本构成，并保留每项分量。
+
+## 7. Research Snapshot
 
 ```yaml
-paper_id: openvla-oft
-title: Fine-Tuning Vision-Language-Action Models
-paper_url: ...
-code_url: ...
-paper_revision: ...
-code_revision: ...
+model_or_paper_id: qwen3-vl
+source_url: ...
+revision: ...
 license: ...
-checkpoint_license: ...
-datasets: [...]
-embodiments: [...]
-action_representation: ...
+native_tasks: [grounding, pointing, ocr]
+coordinate_protocol: ...
+inference_backends: [...]
+training_support: ...
 claims:
-  - metric: ...
-    benchmark: ...
+  - benchmark: ...
+    metric: ...
     value: ...
 components:
-  - name: action_chunk_decoder
+  - name: box_parser
     maturity: experimental
-    compatibility: [...]
 reproduction:
   status: queued
   budget: ...
   acceptance: [...]
 ```
 
-## 6. 论文到实验的门控
+## 8. 组件进入实验的门控
 
-1. claim 可定位到论文表格或代码配置。
-2. 代码、checkpoint 和数据许可证已记录。
-3. observation/action/embodiment compatibility 明确。
-4. changed variable 可隔离，存在 baseline 与消融。
-5. 预算和预期 artifact 完整。
-6. 真机风险通过安全审查。
+1. 模型或论文 revision 固定。
+2. 权重、代码和数据许可证已记录。
+3. 坐标协议和预处理可复现。
+4. claim 可定位到官方配置、论文或模型卡。
+5. changed variable 可隔离，并存在 baseline。
+6. 预算、数据 split 和预期 evidence 完整。
 7. research snapshot hash 已冻结。

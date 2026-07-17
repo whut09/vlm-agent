@@ -1,234 +1,233 @@
 # VLM Agent
 
-面向 Vision-Language-Action（VLA）研究、训练、评测与持续优化的 **evidence-driven agent harness**。
+面向目标识别、开放词汇检测、视觉定位与视觉推理的 **native-grounding VLM optimization harness**。
 
-本项目参考 [whut09/YOLO-Agent](https://github.com/whut09/YOLO-Agent) 的状态机、证据契约、实验图、预算调度、论文快照和 loop engineering 思路，但不把 VLA 简化成“换一个模型的目标检测”。VLA 的核心对象是带时序、动作、机器人本体和环境反馈的 episode，因此本项目围绕 **模型适配、轨迹数据、视觉检索/视觉 RAG、强化学习、安全门控和可恢复实验循环** 重新设计。
+本项目参考 [whut09/YOLO-Agent](https://github.com/whut09/YOLO-Agent) 的状态机、证据契约、实验图、预算调度、错误挖掘和 loop engineering，但研究对象不再是固定类别检测器，也不是机器人 VLA。项目聚焦能够直接理解图像并输出目标类别、边界框、点坐标、数量、属性、关系和解释的视觉语言模型，例如 Qwen3-VL、GLM-V、Molmo2 等原生具备 grounding/pointing 能力的模型。
 
-> 当前阶段：架构与实施计划。仓库暂不宣称已经具备可用的训练或真机控制能力。
+> 当前阶段：方案设计与架构规划。仓库暂不宣称已完成训练、评测或生产部署。
 
-## 项目目标
+## 项目定位
 
-- 用统一 adapter 接入 SmolVLA、OpenVLA/OFT、π0/openpi、GR00T 等不同动作表示的 VLA。
-- 用统一 episode contract 管理 LeRobot、RLDS/Open X-Embodiment、LIBERO、DROID、BridgeData V2 和自采数据。
-- 建立离线视觉检索与在线 episodic memory，检索相似场景、成功轨迹、失败案例和技能片段。
-- 建立从 SFT、离线强化学习、仿真在线强化学习到受控真机 fine-tuning 的渐进训练链。
-- 把建议、训练、评测、晋级和回滚绑定到可复现 evidence，而不是只依赖 LLM 文本判断。
-- 把论文阅读转化为冻结的 research snapshot、组件契约、复现队列和可消融 recipe。
-- 面向 harness engineering 与 loop engineering，而不是只提供一次性 notebook。
+VLM Agent 可以理解为“从 YOLO 自动优化系统升级到开放语义视觉定位系统”，但核心模型不依赖 YOLO、GroundingDINO 或其他外部检测器作为主路径。
 
-## 第一阶段技术选择
+输入：
 
-第一版采用“一主两辅”的适配策略：
+- 一张或多张图片、视频帧或裁剪区域。
+- 自然语言查询、类别列表、属性约束或关系描述。
+- 可选的任务 schema、输出格式、示例和检索上下文。
 
-| 角色 | 建议选择 | 用途 |
+输出：
+
+- 目标名称、开放词汇描述和置信信息。
+- bounding boxes、points、regions 或目标间空间关系。
+- 计数、属性、OCR 结果和定位解释。
+- 结构化 JSON、可视化结果、原始模型响应和验证报告。
+
+典型任务：
+
+- “找出图中所有戴安全帽的人并给出框。”
+- “定位离红色车辆最近的行人。”
+- “图中有几个灭火器？分别在哪里？”
+- “找到包装上生产日期的位置并读取文字。”
+- “定位与参考图中同类的缺陷，即使类别没有出现在训练标签中。”
+
+## 非目标
+
+- 不做机械臂、动作控制、VLA policy 或真实机器人强化学习。
+- 不把 YOLO 与 GroundingDINO 组成必选的级联系统。
+- 不把一个固定 prompt 包装成应用后就声称是 Agent。
+- 不只比较通用问答 benchmark，而忽略框坐标、漏检、幻觉和延迟。
+
+## 核心技术判断
+
+### 原生 Grounding VLM 是主路径
+
+模型直接从图像和文本生成目标、框、点或区域。Harness 负责统一 prompt、坐标、解析、验证、评测和优化，不在主路径中依赖独立检测器。
+
+### 模型不在架构中写死
+
+Qwen3-VL 是首选 baseline 候选，因为其官方能力覆盖目标识别、开放词汇 2D grounding、点定位、OCR 和视觉推理；但最终默认模型由本地实验决定。首轮候选：
+
+| 候选 | 定位 | 首轮用途 |
 |---|---|---|
-| 默认开发模型 | [SmolVLA / LeRobot](https://huggingface.co/blog/smolvla) | 工具链完整，适合先打通 contract、训练和评测 |
-| 主研究模型 | [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | 研究 action chunk、连续动作、LIBERO 与后续 RL |
-| 扩展验证模型 | [openpi](https://github.com/Physical-Intelligence/openpi) 或 [Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T) | 验证 flow/diffusion policy、跨本体与大模型适配边界 |
+| [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL) | 通用视觉理解、grounding、pointing、多尺寸开源权重 | 默认 baseline 候选 |
+| [GLM-V](https://github.com/zai-org/GLM-V) | 视觉推理与精确 grounding，提供本地尺寸模型 | 结构化定位对照 |
+| [Molmo2](https://github.com/allenai/molmo2) | 开放权重、pointing、图像与视频 grounding | 点定位与视频扩展对照 |
 
-第一阶段默认闭环：
+选择标准不是“榜单最高”，而是：
 
-```text
-LeRobot-format sample dataset
-  -> dataset profile / validation
-  -> SmolVLA baseline SFT
-  -> replay evaluation
-  -> LIBERO simulation evaluation
-  -> failure mining
-  -> visual retrieval index
-  -> retrieval-aware candidate
-  -> deterministic promotion gate
+- 目标定位精度和开放词汇泛化。
+- 结构化输出有效率和坐标协议稳定性。
+- 小目标、密集目标、长尾类别和中文查询表现。
+- 显存、吞吐、首 token 延迟和单图成本。
+- 微调工具链、许可证、量化与本地部署成熟度。
+
+建议先用能在现有 GPU 上稳定运行的 4B–10B 级模型打通 harness，再决定是否扩展更大模型。模型尺寸和量化配置属于实验变量，不属于架构常量。
+
+## 统一任务协议
+
+```json
+{
+  "task": "grounding",
+  "query": "定位所有没有佩戴安全帽的人",
+  "image": "images/site_001.jpg",
+  "output_schema": "grounding.v1",
+  "coordinate_space": "normalized_1000",
+  "return_explanation": true
+}
 ```
 
-不建议一开始直接训练大规模 π0/GR00T，也不建议第一版进行无保护的真机在线 RL。先用较小模型和仿真环境验证 harness，再扩大算力与机器人范围。
+统一结果：
+
+```json
+{
+  "objects": [
+    {
+      "label": "未佩戴安全帽的人",
+      "box": [112, 84, 376, 941],
+      "point": [244, 430],
+      "confidence": 0.81,
+      "evidence": "头部区域未观察到安全帽"
+    }
+  ],
+  "model": "model-adapter-id",
+  "raw_response_artifact": "...",
+  "validation": {
+    "schema_valid": true,
+    "coordinates_valid": true
+  }
+}
+```
+
+模型原始坐标可能采用像素、0–1、0–1000、特殊 box token 或文本坐标。Adapter 必须转换到统一内部坐标，同时保存原始响应，禁止在无法解析时静默猜测。
 
 ## 总体架构
 
 ```mermaid
 flowchart LR
-    U[Task / Budget / Safety Spec] --> O[Loop Orchestrator]
-    D[Episode Datasets] --> P[Dataset Profiler]
-    R[Research Snapshot] --> O
-    P --> E[Evidence Store]
-    O --> C[Candidate & Recipe Planner]
-    M[Visual Retrieval Memory] --> C
-    C --> G[Deterministic Gates]
-    G --> X[Executors]
-    X --> A[VLA / Env / Robot Adapters]
-    A --> E
-    E --> F[Failure Mining & Reports]
-    F --> O
-    F --> M
+    T[Task Spec] --> P[Prompt Compiler]
+    I[Image / Video] --> A[Native Grounding VLM Adapter]
+    P --> A
+    R[Visual Retrieval Context] --> P
+    A --> O[Raw Multimodal Output]
+    O --> S[Structured Output Parser]
+    S --> V[Schema & Geometry Validator]
+    V --> E[Evidence Store]
+    E --> D[Error Mining]
+    D --> C[Candidate Planner]
+    C --> G[Budget & Promotion Gates]
+    G --> X[Fine-tune / Prompt / Decode Executor]
+    X --> A
 ```
 
 完整设计见 [docs/architecture.md](docs/architecture.md)。
 
 ## Loop Engineering
 
-Loop orchestrator 是可恢复状态机，不是脚本拼接。建议默认 stage：
-
 ```text
 init
   -> validate_environment
   -> profile_dataset
   -> build_research_snapshot
-  -> build_retrieval_index
   -> run_baseline
-  -> evaluate_baseline
-  -> diagnose_failures
+  -> evaluate_grounding
+  -> diagnose_errors
+  -> build_visual_index
   -> generate_candidates
-  -> safety_review
-  -> smoke_train
-  -> full_train
-  -> rollout_eval
+  -> smoke_inference
+  -> fine_tune_or_prompt_optimize
+  -> evaluate_candidate
   -> compare_and_promote
-  -> mine_episodes
+  -> mine_hard_samples
   -> dataset_promote
   -> report
   -> next_round
 ```
 
-每个 stage 必须声明：
+每个 stage 声明 `requires`、`provides`、`evidence_required`、`retry_policy`、`budget_contract` 和 `artifact_contract`。缺失标注、坐标协议、baseline 或评测覆盖时进入 blocked，而不是继续生成不可信结论。
 
-- `requires` 与 `provides`。
-- `block_on_missing`：缺失证据时阻塞，而不是猜测。
-- `retry_policy`：可重试错误、次数与退避。
-- `budget_contract`：GPU 小时、rollout 数、真机分钟和人工干预上限。
-- `safety_contract`：动作范围、碰撞、急停、workspace 和人工批准。
-- `artifact_contract`：格式、schema 版本、哈希与 lineage。
+## 可从 YOLO-Agent 迁移
 
-## Harness 分层
+直接泛化：
 
-```text
-vlm_agent/
-  core/             # state, contracts, event log, evidence, lineage, queue
-  harness/          # orchestrator, stage runners, promotion and resume
-  adapters/
-    models/         # smolvla, openvla_oft, openpi, groot
-    datasets/       # lerobot, rlds, libero, droid, bridge
-    envs/           # libero, robosuite, isaac, real_robot
-    robots/         # embodiment-specific observation/action conversion
-  retrieval/        # encoders, indexes, rerankers, episodic memory
-  training/         # sft, offline_rl, online_rl, reward and rollout workers
-  evaluation/       # replay, sim, real, robustness, latency, safety
-  research/         # paper registry, snapshot, component and recipe extraction
-  agents/           # planner, critic, failure analyst, budget advisor
-  reports/          # run, comparison, ablation and next-round reports
-```
+- loop state、stage contract、event log、artifact manifest。
+- evidence store、decision ledger、execution queue、experiment graph。
+- dataset versioning、budget optimizer、ASHA、Pareto promotion。
+- orchestrator、stage runner、candidate planner、report。
+- frozen research snapshot、组件 registry、复现队列和消融计划。
 
-### 可从 YOLO-Agent 迁移
+需要重写：
 
-优先迁移并泛化：
+- COCO-only task spec 改成 detection/grounding/pointing/counting/OCR/relations。
+- Ultralytics executor 改成 Transformers/vLLM/SGLang/API/native model executors。
+- YOLO 输出 importer 改成生成式 box/point parser 和坐标 normalizer。
+- 检测错误分类扩展为 grounding、language、format、hallucination 和 reasoning 错误。
+- 固定类别数据策略改成开放词汇 ontology、表达式和 hard negative 策略。
 
-- `core/loop_state.py`、`evidence_store.py`、`evidence_contract.py`。
-- `core/artifact_manifest.py`、`event_log.py`、`decision_ledger.py`。
-- `core/execution_queue.py`、`experiment_graph.py`、`command_spec.py`、`executor.py`。
-- `core/dataset_versioning.py`，改为 episode/chunk/trajectory aware manifest。
-- `agents/orchestrator.py`、`stage_runner.py`、`candidate_generator.py`。
-- ASHA、successive-halving、budget、Pareto 等确定性策略。
-- `research/` 的 snapshot、registry、component、recipe 与 reproduction pipeline。
-- `reports/` 的 run summary、cross-run comparison 和 next-round。
+## 数据与评测
 
-必须重写：
+第一阶段按能力拆分数据集，而不是只混合成一个大训练集：
 
-- COCO、检测框、mAP 和 Ultralytics adapter。
-- 单图错误分类；VLA 需要时序 failure taxonomy。
-- 晋级指标；VLA 需要 success、safety、latency、smoothness 和 intervention 综合门控。
-- 数据切分；必须按 scene/task/robot/operator/time 做 group split，避免相邻帧泄漏。
+| 能力 | 建议数据 |
+|---|---|
+| 通用目标检测 | COCO、Objects365、OpenImages |
+| 长尾与开放词汇 | LVIS、ODinW |
+| 指代表达定位 | RefCOCO、RefCOCO+、RefCOCOg |
+| phrase grounding | Flickr30k Entities、Visual Genome |
+| 点定位与计数 | PointQA、CountBench 或自构造 point/count 数据 |
+| 文档与 OCR 定位 | DocLayNet、TextOCR、企业自有文档数据 |
+| 领域任务 | 从 YOLO 格式转换并增加自然语言 query 的自有数据 |
 
-## 视觉检索与视觉 RAG
+核心指标：
 
-视觉 RAG 不应只把截图向量化后拼进 prompt。第一版设计四类 memory：
+- detection/grounding：AP、AP50、Recall、Acc@IoU、mean IoU。
+- open vocabulary：base/novel、rare/common/frequent、unseen query 表现。
+- counting：MAE、exact match、count-conditioned localization。
+- structured output：JSON valid rate、box parse rate、coordinate validity。
+- reliability：hallucinated object rate、duplicate rate、miss rate、calibration。
+- efficiency：显存、吞吐、首 token、总延迟、输出 token 和单图成本。
 
-1. **Semantic memory**：任务、对象、场景、机器人和技能文本。
-2. **Visual memory**：关键帧、短视频片段、物体 crop、深度或点云摘要。
-3. **Action memory**：动作 chunk、末端轨迹、夹爪状态和 proprioception。
-4. **Outcome memory**：成功、失败类型、人工干预、reward 和安全事件。
+## 视觉检索与 Visual RAG
 
-检索采用 coarse-to-fine：metadata filter → multimodal ANN → temporal reranker → embodiment compatibility gate。默认只把结果用于 planner/context 或显式 adapter 输入，不在没有消融的情况下直接改变底层动作分布。
+Visual RAG 只增强原生 VLM 推理，不替代定位模型：
 
-关键实验包括：无检索、随机检索、成功 episode、成功 + hard negative、frame vs trajectory、late-fusion vs memory token、同本体 vs 跨本体，以及 split/近重复污染审计。
+- 检索相似场景、同类目标、长尾类别和 hard negative。
+- 检索标注过的 few-shot grounding 示例。
+- 检索类别定义、属性约束、关系规则和领域术语。
+- 将检索结果编译成受控 multimodal context，并记录来源和 split。
 
-## 强化学习路线
+必须比较：无检索、随机示例、文本示例、视觉示例、视觉 + hard negative。训练、验证和测试间禁止近重复图片或相同视频帧泄漏。
+
+## 训练与后训练
+
+建议风险和成本递增：
 
 ```text
-SFT baseline
-  -> offline preference / value learning
-  -> offline RL on fixed episodes
-  -> simulation online RL
-  -> shadow-mode real evaluation
-  -> human-intervention real fine-tuning
+prompt / decoding baseline
+  -> LoRA SFT for structured grounding
+  -> hard-negative SFT
+  -> preference optimization for valid and precise outputs
+  -> reward-based post-training for localization and reasoning
 ```
 
-建议先复现 [ConRFT](https://arxiv.org/abs/2502.05450) 的 offline/online reinforced fine-tuning 思路，再把 [SimpleVLA-RL](https://arxiv.org/abs/2509.09674) 风格的 outcome reward 与并行 rollout 作为独立 executor 接入。RL 不是默认自动开启的 stage，必须通过 baseline、仿真、安全和预算 gate。
+强化学习在本项目中指 VLM 后训练，不是机器人在线 RL。Reward 可以组合 schema validity、IoU、coverage、重复框、幻觉、解释一致性和长度成本，但必须防止通过少输出或固定格式投机。
 
-## Evidence 与晋级规则
+## 里程碑
 
-每个候选至少记录：
+- **M0 Harness Skeleton**：typed schemas、状态机、证据、队列、CLI、resume。
+- **M1 Native Grounding Baseline**：首个模型 adapter、prompt compiler、box/point parser、可视化。
+- **M2 Grounding Evaluation**：COCO/RefCOCO 风格评测、错误分类、对比报告。
+- **M3 Visual Retrieval**：视觉示例索引、hard negative、检索 trace 和消融。
+- **M4 Fine-tuning Loop**：LoRA SFT、dataset promotion、budget 和 Pareto gate。
+- **M5 Post-training**：preference/reward contract、定位 reward、可靠性优化。
+- **M6 Research-to-Experiment**：冻结论文快照、复现队列、recipe critic 和消融。
 
-- Git commit、环境锁、模型与数据集 hash。
-- embodiment、observation/action schema 与归一化统计。
-- seed、训练预算、GPU、吞吐、显存和 checkpoint lineage。
-- task success、failure taxonomy、碰撞、越界和 intervention。
-- action latency、control frequency、trajectory smoothness 与长时稳定性。
-- retrieval score、来源 episode、时间区间和 split。
-- research snapshot hash、prompt hash、LLM 输出与 deterministic gate。
+## 文档
 
-默认采用 Pareto gate：
+- [架构设计](docs/architecture.md)
+- [模型、数据集与论文地图](docs/research-map.md)
 
-```text
-success_delta >= threshold
-AND safety_regression == false
-AND latency_within_budget == true
-AND evaluation_coverage >= minimum
-AND evidence_contract_complete == true
-```
-
-## 数据集与评测建议
-
-| 阶段 | 数据/环境 | 目的 |
-|---|---|---|
-| Contract 开发 | LeRobot 小型数据或 toy episodes | 验证 schema、加载、切分、hash |
-| 模型 baseline | LeRobot + SmolVLA 兼容数据 | 打通训练与 replay eval |
-| 研究基准 | [LIBERO](https://libero-project.github.io/) | 长时任务、迁移和遗忘评测 |
-| 跨本体预训练 | [Open X-Embodiment](https://robotics-transformer-x.github.io/) / RLDS | 多机器人、多任务统一 |
-| 真机泛化 | DROID、BridgeData V2 或目标机器人自采集 | 场景与本体适配 |
-| 合成与扩展 | RoboTwin / Isaac Lab | RL rollout、扰动和安全测试 |
-
-数据晋级单位应是 episode manifest，不是文件夹复制。切分必须保存 group key，并进行 near-duplicate 检测。
-
-## 论文与组件地图
-
-```text
-paper sync
-  -> deduplicate / classify
-  -> extract claims and components
-  -> license / code / checkpoint audit
-  -> embodiment compatibility review
-  -> reproduction contract
-  -> frozen research snapshot
-  -> candidate recipe
-  -> ablation and promotion
-```
-
-初始阅读与复现列表见 [docs/research-map.md](docs/research-map.md)。
-
-## 实施里程碑
-
-- **M0 Harness Skeleton**：typed schemas、状态机、事件日志、artifact、queue、doctor、resume。
-- **M1 SmolVLA + LeRobot**：dataset adapter、SFT executor、replay 与 LIBERO evaluator。
-- **M2 Failure + Retrieval**：时序错误分类、multimodal index、lineage、leakage guard。
-- **M3 OpenVLA-OFT**：continuous action chunk、多模型能力矩阵、预算调度。
-- **M4 RL Loop**：offline RL、并行仿真 rollout、安全门控和人工干预记录。
-- **M5 Research-to-Experiment**：冻结论文快照、复现队列、recipe critic 和消融。
-
-## Codex 分段实施
-
-不要用一个超长 prompt 一次实现完整 VLA Agent。按阶段执行、每段验证、每段提交：
-
-- [docs/codex-prompts.md](docs/codex-prompts.md)
-- [docs/architecture.md](docs/architecture.md)
-- [docs/research-map.md](docs/research-map.md)
+Codex 分段 prompts 不写入仓库，由开发阶段按当前代码状态单独生成和执行。
 
 ## License
 

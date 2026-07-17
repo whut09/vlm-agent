@@ -1,227 +1,319 @@
-# VLM Agent 初步架构
+# Native Grounding VLM Agent 架构
 
-## 1. 设计原则
+## 1. 系统边界
 
-### Harness first
+系统只研究视觉语言模型的视觉理解、目标识别与定位能力。主路径是一个原生支持 grounding/pointing 的 VLM，不依赖外部 YOLO 或开放词汇检测器完成最终框预测。
 
-模型训练只是 executor 的一种。核心系统先解决输入契约、可恢复执行、证据、数据 lineage、预算、安全和比较，避免所有逻辑绑定到某一个 VLA 仓库。
+系统可以借鉴 YOLO-Agent 的实验工程能力，但模型前向、输出协议、数据集和评测必须针对生成式 VLM 重写。
 
-### Typed boundary
+## 2. 设计原则
 
-所有跨模块输入输出使用可版本化 schema。LLM 可以提出候选，但不能绕过 schema、预算和安全 gate 直接生成并执行任意命令。
+### Model agnostic
 
-### Evidence before recommendation
+Qwen3-VL、GLM-V、Molmo2 等通过统一 `GroundingModelAdapter` 接入。内部 contract 不出现某个模型专用 token。
 
-没有完整 baseline、评测覆盖或数据 lineage 时，系统应输出 blocked/insufficient evidence，而不是给出高置信度优化建议。
+### Structured first
 
-### Frozen research
+自然语言解释是辅助 evidence，目标、框、点、关系和置信必须进入稳定 schema。原始响应始终保留。
 
-训练轮次不临时联网查询论文。论文、代码、组件、许可证和 checkpoint 元数据在轮次开始前构成 hash 固定的 research snapshot。
+### Coordinates are data contracts
 
-### Simulation before real robot
+像素、0–1、0–1000、特殊 token 和 resized-image 坐标不能混用。所有转换记录原尺寸、预处理尺寸、padding/crop 和逆变换。
 
-任何改变动作分布的 candidate 先经过 replay、仿真、扰动和安全评测。真机执行需要显式 adapter、workspace 限制、急停和人工批准。
+### Evidence before optimization
 
-## 2. 核心领域模型
+没有 baseline、标注版本、评测覆盖和原始输出时，Agent 不生成高置信度优化结论。
 
-建议使用 Pydantic 定义以下 schema，并为每个 schema 增加 `schema_version`。
+### One changed variable
 
-### `TaskSpec`
+模型、prompt、解码、分辨率、训练数据、LoRA 配置和检索上下文分别作为实验变量，避免一次修改多项后无法归因。
 
-- task id、自然语言指令、成功条件、task family、对象、场景和 horizon。
-- 允许的 embodiment、所需传感器、评测次数、seed、阈值和预算。
+## 3. 能力协议
 
-### `EmbodimentSpec`
+`TaskType` 建议包含：
 
-- robot、关节、末端执行器、相机和控制频率。
-- observation keys、shape、dtype、坐标系和时间同步规则。
-- action space、单位、范围、chunk length、控制模式、归一化和安全 clamp。
+- `recognition`：识别图中目标和属性。
+- `grounding`：按自然语言描述输出一个或多个框。
+- `pointing`：输出代表目标的点。
+- `open_vocabulary_detection`：按开放类别列表检测。
+- `referring_expression`：理解复杂指代、属性和关系。
+- `counting`：计数并可选返回每个实例位置。
+- `ocr_grounding`：定位并读取文字。
+- `spatial_relation`：目标间上下左右、包含、邻近等关系。
+- `region_understanding`：给定框解释区域，或从描述返回区域。
+- `video_grounding`：后续扩展，输出时间片段和空间位置。
 
-### `EpisodeManifest`
+## 4. 核心 Schema
 
-- episode id、dataset version、task、scene、robot、operator 和时间。
-- frame/chunk 数、采样频率、模态完整性和文件 hash。
-- success、reward、termination、intervention、failure labels、split group 和近重复 cluster。
+### `GroundingTaskSpec`
+
+- task id、task type、query、language、output schema。
+- image/video artifact、frame selection 和 image transform。
+- coordinate space、允许的 region 类型和最大目标数。
+- ontology、属性、关系与 negative constraints。
+- latency、token、显存和成本预算。
 
 ### `ModelSpec`
 
-- architecture、checkpoint、revision、license 和 source。
-- observation/action requirements、processor、action decoder、precision 和 runtime requirements。
+- provider、model id、revision、license、quantization。
+- native coordinate protocol、特殊 tokens、图像尺寸策略。
+- inference backend、precision、context、最大视觉 token。
+- LoRA/全参训练能力和已知限制。
 
-### `RetrievalRecord`
+### `GroundingPrediction`
 
-- memory id、episode id、时间区间和模态引用。
-- visual/text/action embedding 版本。
-- task、scene、object、robot、outcome、split、source hash 和过期策略。
+- `label`、`query_span`、`box`、`point`、`mask_ref`。
+- `confidence`、`evidence_text`、`attributes`、`relations`。
+- 原始坐标、标准坐标、parser version 和 provenance。
+
+### `GroundingEvidence`
+
+- task、dataset version、split、image hash。
+- raw response、parsed prediction、validation errors。
+- ground truth matching、IoU、FP/FN、latency、tokens、VRAM。
+- prompt、decode、model、adapter 和 code revision。
 
 ### `ExperimentNode`
 
-- parent、changed variables、hypothesis 和 expected evidence。
-- model/dataset/research snapshot hash、executor、budget、安全级别和依赖。
+- baseline/parent、hypothesis、changed variable。
+- expected evidence、budget、executor 和 promotion gate。
+- dataset/research/retrieval snapshot hash。
 
-### `ExecutionResult` 与 `EvidenceBundle`
-
-- typed command、状态、资源、stdout/stderr、checkpoint、指标和 failure type。
-- dataset/training/evaluation/retrieval/safety/cost evidence 的完整性、freshness 和可比较性。
-
-## 3. 模块边界
-
-### Core
-
-- `LoopState`：stage 状态、attempt、blocked reason 和 artifacts。
-- `StageContract`：requires/provides/evidence/retry/budget/safety。
-- `EvidenceStore`：typed evidence、完整性检查和 lineage。
-- `ArtifactManifest`：文件 hash、producer、parent 和 retention。
-- `EventLog`：append-only JSONL。
-- `DecisionLedger`：proposal、prompt hash、gate 和最终执行映射。
-- `ExecutionQueue`：可恢复队列、lease、heartbeat 和幂等 key。
-- `ExperimentGraph`：baseline、candidate、ablation 和 promotion 关系。
-
-### Adapters
-
-- model：`prepare_batch`、`predict_action`、`save/load`、`capabilities`。
-- dataset：`scan`、`validate`、`iter_episodes`、`convert`。
-- env：`reset`、`step`、`success`、`safety_events`、`render`。
-- robot：observation/action conversion、rate control、clamp、estop。
-- tracker：可选接入 W&B/MLflow，但本地 artifact 始终是 source of truth。
-
-### Harness
-
-- orchestrator 只推进状态与调用 stage runner。
-- stage runner 校验 contract，调用 service/executor，写入 evidence。
-- deterministic gate 负责可执行性、预算、安全和晋级。
-- LLM agent 只负责解释、归因、候选提议和报告，不直接持有执行权。
-
-## 4. 推荐状态机
-
-| Stage | 主要输出 | 典型阻塞条件 |
-|---|---|---|
-| `init` | run context | spec 非法 |
-| `validate_environment` | capability report | 依赖或硬件缺失 |
-| `profile_dataset` | dataset evidence | schema、split 或模态错误 |
-| `build_research_snapshot` | frozen snapshot | hash 或许可证审计失败 |
-| `build_retrieval_index` | index manifest | split 污染或 embedding 不完整 |
-| `run_baseline` | checkpoint/runtime evidence | smoke 失败或预算不足 |
-| `evaluate_baseline` | evaluation evidence | coverage 不足 |
-| `diagnose_failures` | failure facts | 事实不可复现 |
-| `generate_candidates` | experiment graph | 没有可否证 hypothesis |
-| `safety_review` | safety decision | 动作范围或真机风险不明 |
-| `smoke_train` | smoke evidence | OOM、NaN、schema mismatch |
-| `full_train` | candidate checkpoint | budget gate 失败 |
-| `rollout_eval` | rollout evidence | env/robot 不可用 |
-| `compare_and_promote` | promotion decision | evidence 不完整或安全回退 |
-| `mine_episodes` | mining plan | consent/质量不满足 |
-| `dataset_promote` | dataset version | split leakage 或质量失败 |
-| `report` | report | 缺失项必须显式标注 |
-| `next_round` | delta plan | 达到停止条件 |
-
-## 5. 视觉检索子系统
-
-### 索引单位
-
-- frame：物体状态、局部视觉和短期匹配。
-- clip：1–5 秒动作前后文，用于 temporal retrieval。
-- episode/skill：完整任务和结果，用于 plan-level memory。
-
-每条记录只保存 artifact URI 与 hash，不在向量库内复制不可追踪的原始数据。
-
-### 表征与查询
-
-第一版定义可替换的 visual、language、proprio/action encoder contract。查询链为：
+## 5. 推理链
 
 ```text
-current observation + instruction + embodiment
-  -> metadata compatibility filter
-  -> visual/text ANN top-k
-  -> temporal and outcome rerank
-  -> diversity selection
-  -> leakage/safety gate
+GroundingTaskSpec
+  -> Image Preprocessor
+  -> Prompt Compiler
+  -> GroundingModelAdapter
+  -> RawResponse Artifact
+  -> Model-specific Parser
+  -> Coordinate Normalizer
+  -> Schema Validator
+  -> Geometry Validator
+  -> Prediction Deduplicator
+  -> GroundingEvidence
+```
+
+### Prompt Compiler
+
+负责：
+
+- task-specific system/user template。
+- 明确输出 schema 和坐标协议。
+- 类别 ontology、属性、关系和 negative constraints。
+- 可选的视觉/文本 few-shot context。
+- 模型专用 chat template，但不泄漏到通用 task schema。
+
+### Parser
+
+采用 adapter-specific parser + generic validator：
+
+- 识别特殊 box/point token、JSON、XML 或普通文本坐标。
+- 允许受控 repair，但 repair 前后均保存 artifact。
+- 无法确定坐标语义时返回 parse failure，不猜测。
+- 同时校验 label 与 query 是否对应。
+
+### Geometry Validator
+
+- `x1 < x2`、`y1 < y2`。
+- 坐标在允许范围内。
+- resize、crop、letterbox、rotation 可逆。
+- point 位于目标 box 内时可作为一致性证据。
+- 重复框、异常全图框和退化小框标记为 warning/error。
+
+## 6. Model Adapter
+
+```text
+GroundingModelAdapter
+  capabilities()
+  compile_prompt(task, context)
+  preprocess(media)
+  generate(request)
+  parse(raw_response, transform)
+  training_capabilities()
+  checkpoint_metadata()
+```
+
+首批 adapter 建议：
+
+1. `Qwen3VLAdapter`：默认 baseline 候选。
+2. `GLMVAdapter`：精确 grounding 与 reasoning 对照。
+3. `Molmo2Adapter`：pointing 和视频扩展对照。
+4. `OpenAICompatibleAdapter`：用于兼容 vLLM/SGLang 或远程服务，但仍需指定坐标协议。
+
+模型选择通过 capability matrix 和 benchmark，不通过硬编码优先级。
+
+## 7. Dataset Harness
+
+统一 `GroundingSample`：
+
+- image/video URI 和 hash。
+- query、task type、language、ontology。
+- boxes、points、masks、phrases、attributes、relations。
+- negative queries、difficult/ignore、source license。
+- group id、duplicate cluster 和 split。
+
+Adapters：COCO、LVIS、Objects365、OpenImages、RefCOCO family、Flickr30k Entities、Visual Genome、YOLO-to-grounding、自定义 JSONL。
+
+YOLO 数据转换不能只把类别名拼成一句话。至少生成：
+
+- 类别查询：`定位所有 {class}`。
+- 属性/关系模板（存在标注时）。
+- 正样本、无目标负样本和易混类别 hard negative。
+- 单目标、多目标、计数和全量场景查询。
+
+切分必须按 source image/video/group，禁止同图不同 query 跨 train/val/test。
+
+## 8. 评测 Harness
+
+### 定位
+
+- AP/AP50/AP75、Recall、mean IoU。
+- phrase grounding Acc@0.5/0.75。
+- point-in-box accuracy、point distance。
+- small/medium/large 和单目标/密集目标分层。
+
+### 开放词汇
+
+- base/novel、seen/unseen query。
+- rare/common/frequent 类别。
+- 同义词、中文/英文、属性和关系表达鲁棒性。
+
+### 可靠性
+
+- hallucinated object rate。
+- empty-result precision/recall。
+- duplicate prediction rate。
+- invalid schema/coordinate rate。
+- explanation 与定位的一致性。
+
+### 效率
+
+- 首 token、总延迟、吞吐、输出 token。
+- GPU 显存、量化影响、图像分辨率成本。
+- API 单图成本与失败重试成本。
+
+## 9. Error Taxonomy
+
+- `recognition_error`：类别或属性识别错误。
+- `grounding_miss`：理解正确但框错位或漏框。
+- `hallucination`：查询目标不存在但仍输出。
+- `language_mismatch`：忽略指代、关系、否定或数量。
+- `coordinate_protocol`：坐标尺度、顺序或 resize 逆变换错误。
+- `format_error`：JSON/token/字段无效。
+- `duplicate_error`：同一实例重复输出。
+- `small_dense_failure`：小目标或密集场景失败。
+- `ocr_grounding_error`：文字读取或对应区域错误。
+- `reasoning_localization_conflict`：解释正确但位置错误，或反之。
+
+错误事实进入 candidate planner，而不是让 LLM 直接查看所有原始日志自由发挥。
+
+## 10. Visual Retrieval
+
+Visual retrieval 是增强上下文和错误分析的组件：
+
+```text
+query image + task text
+  -> metadata filter
+  -> image/region embedding retrieval
+  -> hard-negative rerank
+  -> split leakage guard
   -> RetrievalContext
+  -> Prompt Compiler
 ```
 
-`RetrievalContext` 记录 query hash、index version、top-k、score、来源 split、episode 和时间区间。
+索引记录 image/region hash、类别、属性、query、标注、错误类型、split 和 encoder version。检索结果进入 prompt 时必须有 token/image budget，并记录 RetrievalTrace。
 
-### 注入风险等级
+首轮消融：
 
-1. 只提供给 failure analyst 和 candidate planner。
-2. 生成显式高层提示或技能选择。
-3. memory embedding 作为 policy adapter 的额外 token。
-4. retrieval-conditioned action decoder。
+- no retrieval。
+- random few-shot。
+- text-only similar query。
+- visual positive examples。
+- visual positive + hard negatives。
 
-每一级必须有无检索和随机检索对照，避免把数据规模或额外 token 误判为检索收益。
+## 11. 训练与后训练
 
-## 6. 强化学习子系统
+### Prompt/Decode Optimization
 
-### Reward contract
+先调坐标协议、输出 schema、temperature、max tokens、图像分辨率和 few-shot，不训练模型。
 
-统一记录 sparse success、shaped progress、safety penalty、collision、workspace violation、intervention、reset cost、smoothness 和 time-to-completion。奖励版本必须进入 checkpoint lineage。
+### LoRA SFT
 
-### Executor 层级
+训练目标同时覆盖 reasoning text 与 box/point tokens。数据混合比例、坐标格式和负样本必须版本化。
 
-- `SFTExecutor`：监督微调 baseline。
-- `OfflineRLExecutor`：固定 episode 上的 Q/advantage/preference 训练。
-- `SimRolloutExecutor`：并行环境采样和 outcome reward。
-- `OnlineRLExecutor`：策略更新，默认仅允许 simulation。
-- `HumanInterventionExecutor`：受控真机采样，需显式审批与日志。
+### Preference Optimization
 
-### RL gate
+构造同一输入的正确/错误框、有效/无效格式、简洁/冗长解释偏好，优先提升输出稳定性。
 
-- baseline 可复现且 seed 方差已知。
-- action decoder、log-prob 或训练目标满足算法需求。
-- simulator success 与安全指标达到阈值。
-- reward 经过回放审计，rollout budget 和停止条件已配置。
-- 真机具有 clamp、watchdog、急停和人工操作员。
+### Reward-based Post-training
 
-## 7. 评测与故障分类
+Reward contract 可包含：
 
-VLA failure taxonomy 至少包括：
+- schema/coordinate validity。
+- Hungarian matching 后的 IoU/coverage。
+- FP、FN、duplicate、hallucination penalty。
+- empty-query correctness。
+- explanation-grounding consistency。
+- latency/token cost。
 
-- perception grounding：目标、属性、空间关系错误。
-- instruction：忽略约束、顺序或条件。
-- planning：子目标顺序、长时依赖和恢复失败。
-- control：抓取、接触、振荡、超调和动作饱和。
-- temporal：反应延迟、chunk 边界和观测过期。
-- embodiment：坐标系、归一化、关节或夹爪不兼容。
-- retrieval：错误近邻、过期 memory、跨 split 泄漏。
-- safety：碰撞、越界、异常力或 watchdog 触发。
+Reward 需要防止“只输出一个大框”“永远输出空”“省略困难目标”等投机策略。
 
-报告按 task、scene、object、robot、seed 和 failure type 分层，不能只给全局平均 success。
+## 12. Loop State
 
-## 8. 从 YOLO-Agent 迁移
-
-不要把整个仓库复制后全局替换 `yolo` 为 `vla`。建议顺序：
-
-1. YAML/JSON IO、schema 基类和 utils。
-2. loop state、stage contract、event log 和 artifact manifest。
-3. evidence store、decision ledger 和 execution queue。
-4. command/executor、experiment graph 和 run context。
-5. orchestrator、stage runner、report 和 resume。
-6. dataset versioning，随后重写为 episode-aware。
-7. budget/ASHA/Pareto 等确定性策略。
-8. research snapshot 与 reproduction pipeline。
-
-每一步独立测试、无 Ultralytics/COCO import、dry-run 可执行，并保留许可证要求。
-
-## 9. 建议 CLI
+推荐 stage：
 
 ```text
-vlm-agent doctor
-vlm-agent run init|stage|resume
-vlm-agent dataset profile|version|diff|promote
-vlm-agent retrieval build|query|audit
-vlm-agent train sft|offline-rl|online-rl
-vlm-agent eval replay|sim|real|compare
-vlm-agent research sync|build-snapshot|queue-reproduction
-vlm-agent report run|compare|next-round
+init
+validate_environment
+profile_dataset
+build_research_snapshot
+run_baseline
+evaluate_grounding
+diagnose_errors
+build_visual_index
+generate_candidates
+smoke_inference
+optimize_prompt_or_train
+evaluate_candidate
+compare_and_promote
+mine_hard_samples
+dataset_promote
+report
+next_round
 ```
 
-CLI 只构造 typed command，不把任意 shell 字符串直接传给 executor。
+晋级要求：定位收益达到阈值、开放词汇不回退、结构化输出错误不增加、幻觉不恶化、延迟和显存满足预算、evidence 完整。
 
-## 10. MVP 定义
+## 13. 建议目录
 
-- run 能从 init 推进到 report 并支持 resume。
-- LeRobot episode 可验证、版本化并防止 group leakage。
-- SmolVLA baseline 可通过 typed executor 启动或 dry-run。
-- 指标可导入 EvidenceStore，并与 baseline 做确定性比较。
-- failure clip 可写入 visual index 并带 lineage 地检索。
-- 缺失 evidence、安全配置或预算时 loop 会阻塞。
+```text
+vlm_agent/
+  core/
+  harness/
+  adapters/
+    models/
+    datasets/
+    inference/
+  prompting/
+  parsing/
+  geometry/
+  retrieval/
+  training/
+  evaluation/
+  research/
+  agents/
+  reports/
+  visualization/
+```
+
+## 14. MVP
+
+- toy grounding dataset 可 profile/version/split。
+- 一个 native grounding VLM adapter 可 dry-run 或本地推理。
+- 同一任务输出 raw response、标准 JSON 和可视化框。
+- parser/coordinate/geometry 有独立测试。
+- 支持 RefCOCO 风格 Acc@IoU 和 COCO 风格 AP 导入。
+- failure facts 可生成下一轮 prompt 或 LoRA candidate。
+- 缺失坐标协议、标注、预算或 evidence 时 loop 阻塞并可 resume。
